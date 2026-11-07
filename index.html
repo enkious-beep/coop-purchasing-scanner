@@ -3,12 +3,12 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Co-op Purchasing Scanner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
 <style>
-:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#101a16;color:#f1f6f2}
+:root{color-scheme:dark;font-family:system-ui,Arial,sans-serif;background:#101a16;color:#f1f6f2}
 *{box-sizing:border-box}
 body{margin:0}
 main{max-width:850px;margin:auto;padding:20px 14px 70px}
@@ -26,7 +26,6 @@ button{background:#7fd58f;color:#102017;border:0;border-radius:9px;padding:12px 
 button.secondary{background:#344e3c;color:#f2fff4}
 button.danger{background:#6b3535;color:#fff}
 button:disabled{opacity:.45;cursor:not-allowed}
-.row>button{flex-shrink:0}
 .hidden{display:none!important}
 #video{display:block;width:100%;max-height:350px;object-fit:cover;border-radius:12px;background:black}
 #status{padding:10px;border-radius:9px;background:#293e30;color:#e2f6e6;margin:12px 0;white-space:pre-wrap}
@@ -42,9 +41,11 @@ a{color:#9de7a8}
 .stats{font-weight:750;color:#b9efc1}
 footer{font-size:12px;color:#9eb3a3;text-align:center;margin-top:30px}
 #printTitle{display:none}
+#cloudState{font-size:13px;color:#b9efc1;margin-top:8px}
 @media print{
+:root{color-scheme:light}
 body{background:#fff;color:#000}
-header,#authPanel,#scanPanel,#actions,#status,.item-actions,footer{display:none!important}
+header,#authPanel,#scanPanel,#foundPanel,#actions,#status,.item-actions,footer,#cloudControls,#cloudState{display:none!important}
 main{max-width:none;padding:0}
 .panel{border:0;padding:0;margin:0;background:#fff}
 .item{border-color:#999}
@@ -81,6 +82,17 @@ main{max-width:none;padding:0}
 </section>
 
 <div id="app" class="hidden">
+<section id="cloudControls" class="panel">
+<div class="row">
+<div class="grow">
+<strong>☁️ Cloud Purchasing List</strong>
+<div id="cloudState">Connecting...</div>
+</div>
+<button id="refreshCloud" class="secondary">↻ Refresh</button>
+</div>
+<p class="muted">Your list is saved to Supabase under your employee account. Use Refresh to load changes made on another device.</p>
+</section>
+
 <section id="scanPanel" class="panel">
 <h2>Scan a product</h2>
 <div class="row">
@@ -100,7 +112,7 @@ main{max-width:none;padding:0}
 <button type="submit">Find item</button>
 </div>
 </form>
-<p class="muted">Lookup order: Co-op database → Open Food Facts → manual product name.</p>
+<p class="muted">Lookup order: Co-op database → Open Food Facts → manual entry.</p>
 </section>
 
 <section id="foundPanel" class="panel hidden">
@@ -108,11 +120,11 @@ main{max-width:none;padding:0}
 <div class="pill" id="sourceBadge">Lookup</div>
 <p class="muted">UPC: <strong id="foundUpc"></strong></p>
 <label for="productName">Product name</label>
-<input id="productName" placeholder="Enter product name" required>
+<input id="productName" placeholder="Enter product name">
 <label for="brand">Brand (optional)</label>
 <input id="brand" placeholder="Brand">
 <label for="quantity">Quantity to purchase</label>
-<input id="quantity" type="number" min="1" step="1" value="1" required>
+<input id="quantity" type="number" min="1" step="1" value="1">
 <div class="row" style="margin-top:14px">
 <button id="addItem">Add to list</button>
 <button id="cancelItem" class="secondary">Cancel</button>
@@ -134,7 +146,7 @@ main{max-width:none;padding:0}
 </div>
 
 <div id="status" role="status" aria-live="polite">Sign in to get started.</div>
-<footer>Only active Co-op staff may access the scanner. Lists are saved on this device and browser.</footer>
+<footer>Only active Co-op employees may access purchasing lists.</footer>
 </main>
 
 <script>
@@ -147,8 +159,19 @@ const db=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=id=>document.getElementById(id);
 const show=(id,on)=>$(id).classList.toggle('hidden',!on);
 const status=msg=>$('status').textContent=msg;
+const cloud=msg=>$('cloudState').textContent=msg;
 
-let currentUser=null,items=[],pending=null,codeReader=null,stream=null,scanning=false,busy=false,lastCode='',lastAt=0;
+let currentUser=null;
+let listId=null;
+let items=[];
+let pending=null;
+let busy=false;
+let saving=false;
+let codeReader=null;
+let stream=null;
+let scanning=false;
+let lastCode='';
+let lastAt=0;
 
 const UPC_KEYS=['upc','barcode','upc_code','upc_number','barcode_number','sku','gtin','ean','product_upc','product_barcode'];
 const NAME_KEYS=['product_name','name','description','product','item_name','title','product_description'];
@@ -163,23 +186,7 @@ return '';
 };
 
 const digits=v=>String(v??'').replace(/\D/g,'');
-const storageKey=()=>`coop-purchasing-list-v1-${currentUser.id}`;
-
-function save(){
-if(currentUser)localStorage.setItem(storageKey(),JSON.stringify(items));
-}
-
-function load(){
-try{
-const data=JSON.parse(localStorage.getItem(storageKey())||'[]');
-items=Array.isArray(data)?data.filter(x=>x&&typeof x.upc==='string'&&Number.isInteger(x.qty)&&x.qty>0):[];
-}catch{items=[]}
-render();
-}
-
-function escapeHtml(s){
-return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-}
+const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 function render(){
 const count=items.reduce((n,x)=>n+x.qty,0);
@@ -192,23 +199,144 @@ $('items').innerHTML=items.length?items.map((x,i)=>`
 </div>
 <div class="item-actions">
 <span class="qty">×${x.qty}</span>
-<button class="secondary" data-edit="${i}" aria-label="Edit quantity">Edit</button>
-<button class="danger" data-remove="${i}" aria-label="Remove item">×</button>
+<button class="secondary" data-edit="${i}">Edit</button>
+<button class="danger" data-remove="${i}">×</button>
 </div>
 </div>`).join(''):'<p>Nothing scanned yet.</p>';
-}
-
-function hideFound(){
-pending=null;
-show('foundPanel',false);
 }
 
 async function validateUser(){
 const {data:{user},error}=await db.auth.getUser();
 if(error||!user)throw Error('Please sign in.');
-const {data:profile,error:profileError}=await db.from('employee_profiles').select('display_name,active').eq('id',user.id).single();
-if(profileError||!profile?.active)throw Error('This account is not authorized for staff access.');
+const {data:profile,error:profileError}=await db.from('employee_profiles')
+.select('display_name,active').eq('id',user.id).single();
+if(profileError||!profile?.active)
+throw Error('This account is not authorized for staff access.');
 return {user,profile};
+}
+
+async function requireActive(){
+const {user}=await validateUser();
+if(!currentUser||user.id!==currentUser.id)
+throw Error('Your session changed. Please sign in again.');
+}
+
+async function loadCloud(){
+if(saving)throw Error('Please wait for the current save to finish.');
+cloud('Loading from Supabase...');
+await requireActive();
+
+let {data:lists,error}=await db.from('purchase_lists')
+.select('id')
+.eq('created_by',currentUser.id)
+.eq('status','draft')
+.order('created_at',{ascending:false})
+.limit(1);
+
+if(error)throw error;
+
+if(!lists.length){
+const created=await db.from('purchase_lists')
+.insert({created_by:currentUser.id,title:'Purchasing List'})
+.select('id').single();
+
+if(created.error)throw created.error;
+listId=created.data.id;
+}else{
+listId=lists[0].id;
+}
+
+const result=await db.from('purchase_list_items')
+.select('upc,product_name,brand,quantity')
+.eq('list_id',listId)
+.order('created_at',{ascending:true});
+
+if(result.error)throw result.error;
+
+items=(result.data||[]).map(x=>({
+upc:x.upc,
+name:x.product_name,
+brand:x.brand||'',
+qty:x.quantity
+}));
+
+render();
+cloud('✓ Synced with Supabase');
+status('Cloud purchasing list loaded.');
+}
+
+async function saveItem(item,mode){
+if(saving)throw Error('Another save is in progress.');
+saving=true;
+cloud('Saving...');
+try{
+await requireActive();
+if(!listId)throw Error('Cloud list is not ready.');
+
+if(mode==='add'){
+// Read the current cloud quantity before merging.
+const result=await db.from('purchase_list_items')
+.select('quantity')
+.eq('list_id',listId)
+.eq('upc',item.upc)
+.maybeSingle();
+
+if(result.error)throw result.error;
+
+const newQty=(result.data?.quantity||0)+item.qty;
+
+const saved=await db.from('purchase_list_items').upsert({
+list_id:listId,
+upc:item.upc,
+product_name:item.name,
+brand:item.brand,
+quantity:newQty
+},{onConflict:'list_id,upc'});
+
+if(saved.error)throw saved.error;
+}
+
+if(mode==='edit'){
+const saved=await db.from('purchase_list_items')
+.update({quantity:item.qty})
+.eq('list_id',listId)
+.eq('upc',item.upc);
+
+if(saved.error)throw saved.error;
+}
+
+if(mode==='remove'){
+const saved=await db.from('purchase_list_items')
+.delete()
+.eq('list_id',listId)
+.eq('upc',item.upc);
+
+if(saved.error)throw saved.error;
+}
+
+cloud('✓ Saved to Supabase');
+}finally{
+saving=false;
+}
+await loadCloud();
+}
+
+async function clearCloud(){
+if(saving)throw Error('A save is still running.');
+saving=true;
+cloud('Clearing cloud list...');
+try{
+await requireActive();
+if(!listId)throw Error('Cloud list is not ready.');
+const result=await db.from('purchase_list_items')
+.delete()
+.eq('list_id',listId);
+if(result.error)throw result.error;
+cloud('✓ Cloud list cleared');
+}finally{
+saving=false;
+}
+await loadCloud();
 }
 
 async function enter(){
@@ -219,20 +347,19 @@ $('welcome').textContent=profile.display_name||user.email;
 show('authPanel',false);
 show('account',true);
 show('app',true);
-load();
-status('Ready! Scan a barcode or type a UPC.');
+await loadCloud();
 }catch(e){
-await stopCamera();
-currentUser=null;
-items=[];
+status('Cloud connection: '+e.message);
+cloud('Connection failed — retry Refresh');
+if(!currentUser){
 show('authPanel',true);
 show('account',false);
 show('app',false);
-status(e.message);
+}
 }
 }
 
-$('loginForm').addEventListener('submit',async e=>{
+$('loginForm').onsubmit=async e=>{
 e.preventDefault();
 status('Signing in...');
 const {error}=await db.auth.signInWithPassword({
@@ -241,14 +368,17 @@ password:$('password').value
 });
 if(error){status(error.message);return}
 await enter();
-});
+};
 
 $('logout').onclick=async()=>{
 await stopCamera();
 await db.auth.signOut();
 currentUser=null;
+listId=null;
 items=[];
-hideFound();
+pending=null;
+render();
+show('foundPanel',false);
 show('authPanel',true);
 show('account',false);
 show('app',false);
@@ -256,20 +386,32 @@ $('password').value='';
 status('Signed out.');
 };
 
-// Search the Co-op products table.
-// Supabase RLS controls which records the employee may read.
+$('refreshCloud').onclick=async()=>{
+try{
+await loadCloud();
+}catch(e){
+cloud('Refresh failed');
+status(e.message);
+}
+};
+
 async function lookupCoop(upc){
 let offset=0;
 const size=1000;
 while(offset<10000){
-const {data,error}=await db.from('products').select('*').range(offset,offset+size-1);
-if(error)throw Error('Co-op database lookup failed: '+error.message);
-const match=(data||[]).find(row=>UPC_KEYS.some(k=>row[k]!=null&&digits(row[k])===upc));
-if(match)return {
+const {data,error}=await db.from('products')
+.select('*').range(offset,offset+size-1);
+if(error)throw Error('Co-op lookup failed: '+error.message);
+
+const match=(data||[]).find(row=>
+UPC_KEYS.some(k=>row[k]!=null&&digits(row[k])===upc));
+
+if(match)return{
 name:pick(match,NAME_KEYS),
 brand:pick(match,BRAND_KEYS),
 source:'Co-op database'
 };
+
 if(!data||data.length<size)break;
 offset+=size;
 }
@@ -281,12 +423,14 @@ const controller=new AbortController();
 const timeout=setTimeout(()=>controller.abort(),7000);
 try{
 const res=await fetch(
-`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(upc)}.json?fields=product_name,brands`,
+'https://world.openfoodfacts.org/api/v2/product/'+
+encodeURIComponent(upc)+
+'.json?fields=product_name,brands',
 {signal:controller.signal}
 );
 if(!res.ok)return null;
 const data=await res.json();
-if(data.status===1&&data.product?.product_name)return {
+if(data.status===1&&data.product?.product_name)return{
 name:data.product.product_name,
 brand:data.product.brands||'',
 source:'Open Food Facts'
@@ -296,29 +440,36 @@ return null;
 finally{clearTimeout(timeout)}
 }
 
+function hideFound(){
+pending=null;
+show('foundPanel',false);
+}
+
 async function findItem(raw){
 const upc=digits(raw);
 if(upc.length<6||upc.length>14){
 status('Enter a valid 6–14 digit barcode.');
 return;
 }
-if(busy)return;
+if(busy||saving)return;
 busy=true;
 hideFound();
 status('Searching the Co-op database...');
+
 try{
-if(!currentUser)throw Error('Sign in first.');
-await validateUser();
+await requireActive();
 let result=null;
 try{
 result=await lookupCoop(upc);
 }catch(e){
 status(e.message+' Trying external lookup...');
 }
+
 if(!result){
-status('Not in the Co-op database. Checking Open Food Facts...');
+status('Checking Open Food Facts...');
 result=await lookupExternal(upc);
 }
+
 pending={upc,source:result?.source||'Manual entry'};
 $('foundUpc').textContent=upc;
 $('sourceBadge').textContent=pending.source;
@@ -326,11 +477,18 @@ $('productName').value=result?.name||'';
 $('brand').value=result?.brand||'';
 $('quantity').value='1';
 show('foundPanel',true);
-status(result?.name?'Product found! Confirm quantity and add.':'Product not found. Confirm the UPC and enter its name.');
+
+status(result?.name?
+'Product found! Confirm quantity and add.':
+'Product not found. Confirm the UPC and enter its name.');
+
 $('foundPanel').scrollIntoView({behavior:'smooth',block:'start'});
 if(!result?.name)$('productName').focus();
-}catch(e){status(e.message)}
-finally{busy=false}
+}catch(e){
+status(e.message);
+}finally{
+busy=false;
+}
 }
 
 $('upcForm').onsubmit=e=>{
@@ -338,34 +496,33 @@ e.preventDefault();
 findItem($('upc').value);
 };
 
-$('addItem').onclick=()=>{
-if(!pending)return;
+$('addItem').onclick=async()=>{
+if(!pending||saving)return;
 const name=$('productName').value.trim();
 const brand=$('brand').value.trim();
 const qty=Number($('quantity').value);
+
 if(!name){
 status('Enter a product name.');
-$('productName').focus();
 return;
 }
 if(!Number.isSafeInteger(qty)||qty<1){
 status('Quantity must be a positive whole number.');
 return;
 }
-const existing=items.find(x=>x.upc===pending.upc);
-if(existing){
-existing.qty+=qty;
-existing.name=name;
-existing.brand=brand;
-}else{
-items.push({upc:pending.upc,name,brand,qty});
-}
-save();
-render();
+
+const item={upc:pending.upc,name,brand,qty};
+
+try{
+await saveItem(item,'add');
 hideFound();
 $('upc').value='';
-status(`Added ${qty} × ${name}. Ready for the next scan.`);
+status('Added '+qty+' × '+name+' and saved to cloud.');
 $('upc').focus();
+}catch(e){
+cloud('Save failed');
+status('Could not save: '+e.message);
+}
 };
 
 $('cancelItem').onclick=()=>{
@@ -373,34 +530,49 @@ hideFound();
 status('Scan canceled.');
 };
 
-$('items').onclick=e=>{
+$('items').onclick=async e=>{
 const edit=e.target.closest('[data-edit]');
 const remove=e.target.closest('[data-remove]');
+if(saving)return;
+
 if(edit){
-const i=Number(edit.dataset.edit);
-const x=items[i];
+const x=items[Number(edit.dataset.edit)];
 if(!x)return;
-const val=prompt(`Quantity for ${x.name}:`,String(x.qty));
-if(val===null)return;
-const n=Number(val);
-if(!Number.isSafeInteger(n)||n<1){
-status('Quantity must be a positive whole number.');
+const value=prompt('Quantity for '+x.name+':',String(x.qty));
+if(value===null)return;
+const qty=Number(value);
+if(!Number.isSafeInteger(qty)||qty<1){
+status('Enter a positive whole number.');
 return;
 }
-x.qty=n;
-save();
-render();
-status('Quantity updated.');
+try{
+await saveItem({...x,qty},'edit');
+status('Quantity updated in cloud.');
+}catch(err){
+status('Update failed: '+err.message);
 }
+}
+
 if(remove){
-const i=Number(remove.dataset.remove);
-if(!items[i])return;
-if(confirm(`Remove ${items[i].name}?`)){
-items.splice(i,1);
-save();
-render();
-status('Item removed.');
+const x=items[Number(remove.dataset.remove)];
+if(!x||!confirm('Remove '+x.name+'?'))return;
+try{
+await saveItem(x,'remove');
+status('Item removed from cloud.');
+}catch(err){
+status('Remove failed: '+err.message);
 }
+}
+};
+
+$('clearList').onclick=async()=>{
+if(!items.length)return;
+if(!confirm('Clear the entire cloud purchasing list? This affects every device using this list.'))return;
+try{
+await clearCloud();
+status('Cloud purchasing list cleared.');
+}catch(e){
+status('Clear failed: '+e.message);
 }
 };
 
@@ -423,21 +595,15 @@ const lines=[
 ...items.map(x=>[x.upc,x.name,x.brand,x.qty])
 ];
 const csv='\uFEFF'+lines.map(row=>row.map(csvCell).join(',')).join('\r\n');
-const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+const url=URL.createObjectURL(new Blob([csv],{
+type:'text/csv;charset=utf-8'
+}));
 const a=document.createElement('a');
 a.href=url;
-a.download='coop-purchasing-list-'+new Date().toISOString().slice(0,10)+'.csv';
+a.download='coop-purchasing-list-'+
+new Date().toISOString().slice(0,10)+'.csv';
 a.click();
 setTimeout(()=>URL.revokeObjectURL(url),1000);
-};
-
-$('clearList').onclick=()=>{
-if(items.length&&confirm('Clear the entire purchasing list?')){
-items=[];
-save();
-render();
-status('List cleared.');
-}
 };
 
 async function stopCamera(){
@@ -450,9 +616,7 @@ if(stream){
 stream.getTracks().forEach(t=>t.stop());
 stream=null;
 }
-if($('video').srcObject){
 $('video').srcObject=null;
-}
 show('cameraArea',false);
 show('startCamera',true);
 show('stopCamera',false);
@@ -472,7 +636,7 @@ await findItem(upc);
 
 $('startCamera').onclick=async()=>{
 if(!navigator.mediaDevices?.getUserMedia){
-status('Camera unavailable. Use HTTPS on a supported phone browser, or enter the UPC manually.');
+status('Camera unavailable. Use HTTPS or enter UPC manually.');
 return;
 }
 try{
@@ -495,6 +659,7 @@ detector=new BarcodeDetector({
 formats:['ean_13','ean_8','upc_a','upc_e','code_128']
 });
 }catch{detector=null}
+
 if(detector){
 const loop=async()=>{
 if(!scanning)return;
@@ -521,18 +686,17 @@ show('startCamera',false);
 show('stopCamera',true);
 status('Camera ready. Point it at a barcode.');
 await codeReader.decodeFromVideoDevice(
-undefined,
-$('video'),
-(result)=>{if(result)onScan(result.getText())}
+undefined,$('video'),
+result=>{if(result)onScan(result.getText())}
 );
 return;
 }
 
 await stopCamera();
-status('Barcode reader could not load. You can still enter the UPC manually.');
+status('Barcode reader unavailable. Enter UPC manually.');
 }catch(e){
 await stopCamera();
-status('Could not start camera: '+e.message+'. You can enter the UPC manually.');
+status('Camera error: '+e.message);
 }
 };
 
