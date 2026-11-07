@@ -1,0 +1,544 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Co-op Purchasing Scanner</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#101a16;color:#f1f6f2}
+*{box-sizing:border-box}
+body{margin:0}
+main{max-width:850px;margin:auto;padding:20px 14px 70px}
+h1{font-size:clamp(24px,5vw,35px);margin:4px 0}
+h2{font-size:19px}
+p{color:#b7c9bd}
+header{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:22px}
+.panel{background:#1b2a22;border:1px solid #3a5845;border-radius:15px;padding:18px;margin:14px 0}
+.muted{color:#b7c9bd;font-size:14px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+label{display:block;margin:12px 0 5px;font-weight:650}
+input{width:100%;min-width:0;background:#0e1913;color:white;border:1px solid #65836d;border-radius:9px;padding:13px;font:inherit}
+button{background:#7fd58f;color:#102017;border:0;border-radius:9px;padding:12px 16px;font:inherit;font-weight:750;cursor:pointer}
+button.secondary{background:#344e3c;color:#f2fff4}
+button.danger{background:#6b3535;color:#fff}
+button:disabled{opacity:.45;cursor:not-allowed}
+.row>button{flex-shrink:0}
+.hidden{display:none!important}
+#video{display:block;width:100%;max-height:350px;object-fit:cover;border-radius:12px;background:black}
+#status{padding:10px;border-radius:9px;background:#293e30;color:#e2f6e6;margin:12px 0;white-space:pre-wrap}
+.item{border-top:1px solid #3b5844;padding:13px 0;display:flex;justify-content:space-between;gap:10px}
+.item strong{display:block}
+.item small{display:block;color:#bbd0c0;margin-top:4px;overflow-wrap:anywhere}
+.qty{font-size:20px;font-weight:800}
+.item-actions{display:flex;align-items:center;gap:8px}
+.item-actions button{padding:7px 10px}
+.pill{display:inline-block;background:#2e5037;border-radius:99px;padding:4px 9px;font-size:12px;color:#c9f5d2}
+a{color:#9de7a8}
+#authPanel{max-width:450px;margin:35px auto}
+.stats{font-weight:750;color:#b9efc1}
+footer{font-size:12px;color:#9eb3a3;text-align:center;margin-top:30px}
+#printTitle{display:none}
+@media print{
+body{background:#fff;color:#000}
+header,#authPanel,#scanPanel,#actions,#status,.item-actions,footer{display:none!important}
+main{max-width:none;padding:0}
+.panel{border:0;padding:0;margin:0;background:#fff}
+.item{border-color:#999}
+.item small,.muted,p{color:#333}
+#listPanel{display:block!important}
+#printTitle{display:block!important}
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div>
+<div class="pill">THE LOCAL CO-OP AZ</div>
+<h1>📷 Purchasing Scanner</h1>
+<div class="muted">Build and print your store purchasing list</div>
+</div>
+<div id="account" class="hidden">
+<span id="welcome" class="muted"></span>
+<button class="secondary" id="logout">Sign out</button>
+</div>
+</header>
+
+<section id="authPanel" class="panel">
+<h2>Employee Sign In</h2>
+<p>Use your existing Co-op employee account.</p>
+<form id="loginForm">
+<label for="email">Email</label>
+<input id="email" type="email" autocomplete="username" required>
+<label for="password">Password</label>
+<input id="password" type="password" autocomplete="current-password" required>
+<p><button type="submit">Sign in</button></p>
+</form>
+</section>
+
+<div id="app" class="hidden">
+<section id="scanPanel" class="panel">
+<h2>Scan a product</h2>
+<div class="row">
+<button id="startCamera">📷 Start camera</button>
+<button id="stopCamera" class="secondary hidden">Stop camera</button>
+</div>
+<div id="cameraArea" class="hidden" style="margin-top:12px">
+<video id="video" autoplay muted playsinline></video>
+<p class="muted">Point your camera at a UPC or EAN barcode.</p>
+</div>
+<form id="upcForm">
+<label for="upc">Or enter / paste UPC</label>
+<div class="row">
+<div class="grow">
+<input id="upc" inputmode="numeric" autocomplete="off" placeholder="Scan or type barcode" required>
+</div>
+<button type="submit">Find item</button>
+</div>
+</form>
+<p class="muted">Lookup order: Co-op database → Open Food Facts → manual product name.</p>
+</section>
+
+<section id="foundPanel" class="panel hidden">
+<h2>Confirm product</h2>
+<div class="pill" id="sourceBadge">Lookup</div>
+<p class="muted">UPC: <strong id="foundUpc"></strong></p>
+<label for="productName">Product name</label>
+<input id="productName" placeholder="Enter product name" required>
+<label for="brand">Brand (optional)</label>
+<input id="brand" placeholder="Brand">
+<label for="quantity">Quantity to purchase</label>
+<input id="quantity" type="number" min="1" step="1" value="1" required>
+<div class="row" style="margin-top:14px">
+<button id="addItem">Add to list</button>
+<button id="cancelItem" class="secondary">Cancel</button>
+</div>
+</section>
+
+<section id="listPanel" class="panel">
+<h2 id="printTitle">The Local Co-op AZ — Purchasing List</h2>
+<h2>Purchasing List</h2>
+<div id="stats" class="stats">0 products · 0 total units</div>
+<div id="items"><p>Nothing scanned yet.</p></div>
+</section>
+
+<div id="actions" class="row">
+<button id="printList">🖨️ Print list</button>
+<button id="exportCsv" class="secondary">Export CSV</button>
+<button id="clearList" class="danger">Clear list</button>
+</div>
+</div>
+
+<div id="status" role="status" aria-live="polite">Sign in to get started.</div>
+<footer>Only active Co-op staff may access the scanner. Lists are saved on this device and browser.</footer>
+</main>
+
+<script>
+'use strict';
+
+const SUPABASE_URL='https://wejamrklsvlwixjghqor.supabase.co';
+const SUPABASE_KEY='sb_publishable_pPtSuCMGsSbTYU-HWv5Ksg_wlYIKGOs';
+const db=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
+
+const $=id=>document.getElementById(id);
+const show=(id,on)=>$(id).classList.toggle('hidden',!on);
+const status=msg=>$('status').textContent=msg;
+
+let currentUser=null,items=[],pending=null,codeReader=null,stream=null,scanning=false,busy=false,lastCode='',lastAt=0;
+
+const UPC_KEYS=['upc','barcode','upc_code','upc_number','barcode_number','sku','gtin','ean','product_upc','product_barcode'];
+const NAME_KEYS=['product_name','name','description','product','item_name','title','product_description'];
+const BRAND_KEYS=['brand','brand_name','manufacturer'];
+
+const pick=(obj,keys)=>{
+for(const key of keys){
+if(obj[key]!==null&&obj[key]!==undefined&&String(obj[key]).trim())
+return String(obj[key]).trim();
+}
+return '';
+};
+
+const digits=v=>String(v??'').replace(/\D/g,'');
+const storageKey=()=>`coop-purchasing-list-v1-${currentUser.id}`;
+
+function save(){
+if(currentUser)localStorage.setItem(storageKey(),JSON.stringify(items));
+}
+
+function load(){
+try{
+const data=JSON.parse(localStorage.getItem(storageKey())||'[]');
+items=Array.isArray(data)?data.filter(x=>x&&typeof x.upc==='string'&&Number.isInteger(x.qty)&&x.qty>0):[];
+}catch{items=[]}
+render();
+}
+
+function escapeHtml(s){
+return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+function render(){
+const count=items.reduce((n,x)=>n+x.qty,0);
+$('stats').textContent=`${items.length} products · ${count} total units`;
+$('items').innerHTML=items.length?items.map((x,i)=>`
+<div class="item">
+<div class="grow">
+<strong>${escapeHtml(x.name)}</strong>
+<small>${x.brand?escapeHtml(x.brand)+' · ':''}UPC: ${escapeHtml(x.upc)}</small>
+</div>
+<div class="item-actions">
+<span class="qty">×${x.qty}</span>
+<button class="secondary" data-edit="${i}" aria-label="Edit quantity">Edit</button>
+<button class="danger" data-remove="${i}" aria-label="Remove item">×</button>
+</div>
+</div>`).join(''):'<p>Nothing scanned yet.</p>';
+}
+
+function hideFound(){
+pending=null;
+show('foundPanel',false);
+}
+
+async function validateUser(){
+const {data:{user},error}=await db.auth.getUser();
+if(error||!user)throw Error('Please sign in.');
+const {data:profile,error:profileError}=await db.from('employee_profiles').select('display_name,active').eq('id',user.id).single();
+if(profileError||!profile?.active)throw Error('This account is not authorized for staff access.');
+return {user,profile};
+}
+
+async function enter(){
+try{
+const {user,profile}=await validateUser();
+currentUser=user;
+$('welcome').textContent=profile.display_name||user.email;
+show('authPanel',false);
+show('account',true);
+show('app',true);
+load();
+status('Ready! Scan a barcode or type a UPC.');
+}catch(e){
+await stopCamera();
+currentUser=null;
+items=[];
+show('authPanel',true);
+show('account',false);
+show('app',false);
+status(e.message);
+}
+}
+
+$('loginForm').addEventListener('submit',async e=>{
+e.preventDefault();
+status('Signing in...');
+const {error}=await db.auth.signInWithPassword({
+email:$('email').value.trim(),
+password:$('password').value
+});
+if(error){status(error.message);return}
+await enter();
+});
+
+$('logout').onclick=async()=>{
+await stopCamera();
+await db.auth.signOut();
+currentUser=null;
+items=[];
+hideFound();
+show('authPanel',true);
+show('account',false);
+show('app',false);
+$('password').value='';
+status('Signed out.');
+};
+
+// Search the Co-op products table.
+// Supabase RLS controls which records the employee may read.
+async function lookupCoop(upc){
+let offset=0;
+const size=1000;
+while(offset<10000){
+const {data,error}=await db.from('products').select('*').range(offset,offset+size-1);
+if(error)throw Error('Co-op database lookup failed: '+error.message);
+const match=(data||[]).find(row=>UPC_KEYS.some(k=>row[k]!=null&&digits(row[k])===upc));
+if(match)return {
+name:pick(match,NAME_KEYS),
+brand:pick(match,BRAND_KEYS),
+source:'Co-op database'
+};
+if(!data||data.length<size)break;
+offset+=size;
+}
+return null;
+}
+
+async function lookupExternal(upc){
+const controller=new AbortController();
+const timeout=setTimeout(()=>controller.abort(),7000);
+try{
+const res=await fetch(
+`https://world.openfoodfacts.org/api/v2/product/${encodeURIComponent(upc)}.json?fields=product_name,brands`,
+{signal:controller.signal}
+);
+if(!res.ok)return null;
+const data=await res.json();
+if(data.status===1&&data.product?.product_name)return {
+name:data.product.product_name,
+brand:data.product.brands||'',
+source:'Open Food Facts'
+};
+return null;
+}catch{return null}
+finally{clearTimeout(timeout)}
+}
+
+async function findItem(raw){
+const upc=digits(raw);
+if(upc.length<6||upc.length>14){
+status('Enter a valid 6–14 digit barcode.');
+return;
+}
+if(busy)return;
+busy=true;
+hideFound();
+status('Searching the Co-op database...');
+try{
+if(!currentUser)throw Error('Sign in first.');
+await validateUser();
+let result=null;
+try{
+result=await lookupCoop(upc);
+}catch(e){
+status(e.message+' Trying external lookup...');
+}
+if(!result){
+status('Not in the Co-op database. Checking Open Food Facts...');
+result=await lookupExternal(upc);
+}
+pending={upc,source:result?.source||'Manual entry'};
+$('foundUpc').textContent=upc;
+$('sourceBadge').textContent=pending.source;
+$('productName').value=result?.name||'';
+$('brand').value=result?.brand||'';
+$('quantity').value='1';
+show('foundPanel',true);
+status(result?.name?'Product found! Confirm quantity and add.':'Product not found. Confirm the UPC and enter its name.');
+$('foundPanel').scrollIntoView({behavior:'smooth',block:'start'});
+if(!result?.name)$('productName').focus();
+}catch(e){status(e.message)}
+finally{busy=false}
+}
+
+$('upcForm').onsubmit=e=>{
+e.preventDefault();
+findItem($('upc').value);
+};
+
+$('addItem').onclick=()=>{
+if(!pending)return;
+const name=$('productName').value.trim();
+const brand=$('brand').value.trim();
+const qty=Number($('quantity').value);
+if(!name){
+status('Enter a product name.');
+$('productName').focus();
+return;
+}
+if(!Number.isSafeInteger(qty)||qty<1){
+status('Quantity must be a positive whole number.');
+return;
+}
+const existing=items.find(x=>x.upc===pending.upc);
+if(existing){
+existing.qty+=qty;
+existing.name=name;
+existing.brand=brand;
+}else{
+items.push({upc:pending.upc,name,brand,qty});
+}
+save();
+render();
+hideFound();
+$('upc').value='';
+status(`Added ${qty} × ${name}. Ready for the next scan.`);
+$('upc').focus();
+};
+
+$('cancelItem').onclick=()=>{
+hideFound();
+status('Scan canceled.');
+};
+
+$('items').onclick=e=>{
+const edit=e.target.closest('[data-edit]');
+const remove=e.target.closest('[data-remove]');
+if(edit){
+const i=Number(edit.dataset.edit);
+const x=items[i];
+if(!x)return;
+const val=prompt(`Quantity for ${x.name}:`,String(x.qty));
+if(val===null)return;
+const n=Number(val);
+if(!Number.isSafeInteger(n)||n<1){
+status('Quantity must be a positive whole number.');
+return;
+}
+x.qty=n;
+save();
+render();
+status('Quantity updated.');
+}
+if(remove){
+const i=Number(remove.dataset.remove);
+if(!items[i])return;
+if(confirm(`Remove ${items[i].name}?`)){
+items.splice(i,1);
+save();
+render();
+status('Item removed.');
+}
+}
+};
+
+$('printList').onclick=()=>{
+if(!items.length){
+status('Add products before printing.');
+return;
+}
+window.print();
+};
+
+$('exportCsv').onclick=()=>{
+if(!items.length){
+status('Add products before exporting.');
+return;
+}
+const csvCell=x=>'"'+String(x).replace(/"/g,'""')+'"';
+const lines=[
+['UPC','Product Name','Brand','Quantity'],
+...items.map(x=>[x.upc,x.name,x.brand,x.qty])
+];
+const csv='\uFEFF'+lines.map(row=>row.map(csvCell).join(',')).join('\r\n');
+const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8'}));
+const a=document.createElement('a');
+a.href=url;
+a.download='coop-purchasing-list-'+new Date().toISOString().slice(0,10)+'.csv';
+a.click();
+setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+
+$('clearList').onclick=()=>{
+if(items.length&&confirm('Clear the entire purchasing list?')){
+items=[];
+save();
+render();
+status('List cleared.');
+}
+};
+
+async function stopCamera(){
+scanning=false;
+if(codeReader){
+try{codeReader.reset()}catch{}
+codeReader=null;
+}
+if(stream){
+stream.getTracks().forEach(t=>t.stop());
+stream=null;
+}
+if($('video').srcObject){
+$('video').srcObject=null;
+}
+show('cameraArea',false);
+show('startCamera',true);
+show('stopCamera',false);
+}
+
+async function onScan(code){
+const upc=digits(code);
+const now=Date.now();
+if(!scanning||busy||!upc)return;
+if(code===lastCode&&now-lastAt<3000)return;
+lastCode=code;
+lastAt=now;
+await stopCamera();
+$('upc').value=upc;
+await findItem(upc);
+}
+
+$('startCamera').onclick=async()=>{
+if(!navigator.mediaDevices?.getUserMedia){
+status('Camera unavailable. Use HTTPS on a supported phone browser, or enter the UPC manually.');
+return;
+}
+try{
+stream=await navigator.mediaDevices.getUserMedia({
+video:{facingMode:{ideal:'environment'}},
+audio:false
+});
+$('video').srcObject=stream;
+await $('video').play();
+scanning=true;
+show('cameraArea',true);
+show('startCamera',false);
+show('stopCamera',true);
+status('Camera ready. Point it at a barcode.');
+
+if('BarcodeDetector'in window){
+let detector;
+try{
+detector=new BarcodeDetector({
+formats:['ean_13','ean_8','upc_a','upc_e','code_128']
+});
+}catch{detector=null}
+if(detector){
+const loop=async()=>{
+if(!scanning)return;
+try{
+const results=await detector.detect($('video'));
+if(results.length){
+await onScan(results[0].rawValue);
+return;
+}
+}catch{}
+if(scanning)setTimeout(loop,180);
+};
+loop();
+return;
+}
+}
+
+if(window.ZXing?.BrowserMultiFormatReader){
+await stopCamera();
+codeReader=new ZXing.BrowserMultiFormatReader();
+scanning=true;
+show('cameraArea',true);
+show('startCamera',false);
+show('stopCamera',true);
+status('Camera ready. Point it at a barcode.');
+await codeReader.decodeFromVideoDevice(
+undefined,
+$('video'),
+(result)=>{if(result)onScan(result.getText())}
+);
+return;
+}
+
+await stopCamera();
+status('Barcode reader could not load. You can still enter the UPC manually.');
+}catch(e){
+await stopCamera();
+status('Could not start camera: '+e.message+'. You can enter the UPC manually.');
+}
+};
+
+$('stopCamera').onclick=()=>stopCamera();
+
+enter();
+</script>
+</body>
+</html>
