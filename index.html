@@ -22,7 +22,7 @@ const SUPABASE_URL='https://wejamrklsvlwixjghqor.supabase.co';
 const SUPABASE_KEY='sb_publishable_pPtSuCMGsSbTYU-HWv5Ksg_wlYIKGOs';
 const db=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY);
 const $=id=>document.getElementById(id),show=(id,on)=>$(id).classList.toggle('hidden',!on),status=msg=>$('status').textContent=msg,cloud=msg=>$('cloudState').textContent=msg;
-let isPackAdmin=false,packMode=false,packEditingUpc=null,packCache=new Map(),lists=[],selected=null,items=[],pending=null,busy=false,saving=false,loading=false,codeReader=null,stream=null,scanning=false,lastCode='',lastAt=0,readerMode=(()=>{try{return localStorage.getItem('coopScannerReader')==='auto'?'auto':'zxing'}catch{return 'zxing'}})(),cameraToken=0,torchOn=false;
+let currentUser=null,isPackAdmin=false,packMode=false,packEditingUpc=null,packCache=new Map(),lists=[],selected=null,items=[],pending=null,busy=false,saving=false,loading=false,codeReader=null,stream=null,scanning=false,lastCode='',lastAt=0,readerMode=(()=>{try{return localStorage.getItem('coopScannerReader')==='auto'?'auto':'zxing'}catch{return 'zxing'}})(),cameraToken=0,torchOn=false;
 const PACK_TABLE="purchase_pack_sizes";
 const UPC_KEYS=['upc','barcode','upc_code','upc_number','barcode_number','sku','gtin','ean','product_upc','product_barcode'];
 const NAME_KEYS=['product_name','name','description','product','item_name','title','product_description'];
